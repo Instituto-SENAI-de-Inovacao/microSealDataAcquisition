@@ -7,11 +7,18 @@
 
 Este projeto inclui documentação detalhada dividida em arquivos específicos:
 
+### 📋 Documentação Principal
 - **[README.md](README.md)** - Visão geral e documentação principal (este arquivo)
 - **[INSTALACAO.md](INSTALACAO.md)** - Guia de instalação rápida (3 passos)
 - **[OPERACAO.md](OPERACAO.md)** - Manual de operação detalhado
 - **[ESPECIFICACOES.md](ESPECIFICACOES.md)** - Especificações técnicas completas
 - **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** - Guia de solução de problemas
+
+### 📊 Documentação Complementar
+- **[RESUMO_EXECUTIVO.md](RESUMO_EXECUTIVO.md)** - Resumo executivo para gestão
+- **[CHANGELOG.md](CHANGELOG.md)** - Histórico de versões e atualizações
+- **[LICENCA.md](LICENCA.md)** - Informações de licenciamento
+- **[CONTRIBUIR.md](CONTRIBUIR.md)** - Guia para desenvolvedores
 
 ## Índice
 
