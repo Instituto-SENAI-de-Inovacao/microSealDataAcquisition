@@ -130,18 +130,5 @@
 
 ---
 
-## 📞 Suporte e Contato
-
-**Instituto SENAI de Inovação**  
-Equipe de Desenvolvimento de Software
-
-### Canais de Suporte
-1. **Primeira consulta:** Documentação técnica
-2. **Problemas operacionais:** TROUBLESHOOTING.md
-3. **Questões de desenvolvimento:** CONTRIBUIR.md
-4. **Suporte institucional:** Contato direto
-
----
-
 *Índice Geral atualizado em: Junho 2025*  
 *Sistema MicroSEAL v6.32 - Instituto SENAI de Inovação*

@@ -10,6 +10,44 @@
       messagesContainer.innerHTML += "<div>Gravação de logs ativada.</div>";
     }
   }
+  // Função para inicializar SQLite
+  async function initializeSQLite() {
+    try {
+      const success = await window.sqliteManager.initialize();
+      if (success) {
+        logDebug("SQLite inicializado com sucesso para gravação de dados.");
+        return true;
+      } else {
+        logDebug("Erro: Falha ao inicializar SQLite.");
+        return false;
+      }
+    } catch (error) {
+      logDebug("Erro: Falha ao inicializar SQLite - " + error.message);
+      return false;
+    }
+    try {
+      const success = await window.sqliteManager.initialize();
+      if (success) {
+        logDebug("Banco SQLite inicializado com sucesso");
+        // Mostrar estatísticas do banco
+        const stats = window.sqliteManager.getStatistics();
+        if (stats && stats.sensorRecords > 0) {
+          logDebug(`Banco carregado: ${stats.sensorRecords} registros de sensores, ${stats.logRecords} logs`);
+          logDebug(`Dispositivos: ${stats.activeDevices.join(', ')}`);
+          if (stats.firstRecord && stats.lastRecord) {
+            const firstDate = new Date(stats.firstRecord).toLocaleString();
+            const lastDate = new Date(stats.lastRecord).toLocaleString();
+            logDebug(`Período: ${firstDate} até ${lastDate}`);
+          }
+        }
+      } else {
+        logDebug("Erro ao inicializar SQLite. Usando armazenamento em memória.");
+      }
+    } catch (error) {
+      console.error("Erro ao inicializar SQLite:", error);
+      logDebug("Erro ao inicializar SQLite. Usando armazenamento em memória.");
+    }
+  }
 
   // Função para obter timestamp local formatado
   function getLocalTimestamp() {
@@ -122,7 +160,6 @@
   function convertDistance(voltage) {
     return (voltage * DISTANCE_CONVERSION_FACTOR) - DISTANCE_CORRECTION_VALUE;
   }
-
   //////////// Variáveis Globais da Porta e de Comunicação ////////////
   let port;
   let currentBaudRate = null;
@@ -133,6 +170,7 @@
   let recordedData = [];
   let deviceHistory = {};
   let communicationLog = [];
+  let sqliteInitialized = false;
   let mainChart;
   let tempChart;
   let humidityChart;
@@ -149,8 +187,8 @@
   const btnToggleAcquisition = document.getElementById("btnToggleAcquisition");
   const sendRequestButton = document.getElementById("sendRequest");
   const toggleRecordingButton = document.getElementById("toggleRecording");
-  const recordingIndicator = document.getElementById("recording-indicator");
-  const exportDataButton = document.getElementById("exportData");
+  const recordingIndicator = document.getElementById("recording-indicator");  const exportDataButton = document.getElementById("exportData");
+  const exportSqliteDataButton = document.getElementById("exportSqliteData");
   const clearDataButton = document.getElementById("clearData");
   const exportLogButton = document.getElementById("exportLog");
   const showHistoryButton = document.getElementById("showHistory");
@@ -166,7 +204,6 @@
   const historyWindowInput = document.getElementById("historyWindow");
   const yAmplitudeInput = document.getElementById("yAmplitude");
   const exitProgramButton = document.getElementById("exitProgram");
-
   // Força o intervalo de atualização para 50 ms (20 amostras/s)
   updateIntervalSelect.value = "50";
 
@@ -175,6 +212,11 @@
     if (!loggingEnabled) return;
     const timestamp = new Date().toISOString();
     communicationLog.push({ timestamp, direction, message });
+    
+    // Salvar também no SQLite se disponível
+    if (sqliteInitialized && window.sqliteManager) {
+      window.sqliteManager.insertCommunicationLog(direction, message);
+    }
   }
 
   function logDebug(message) {
@@ -576,12 +618,26 @@
             let sensorData =
               deviceId === 4
                 ? processS15STHMQData(frame)
-                : processS15CUMQData(frame, deviceId);
-            if (sensorData) {
+                : processS15CUMQData(frame, deviceId);            if (sensorData) {
               sensorData.deviceId = deviceId;
               sensorData.timestamp = new Date();
               if (isRecording) {
-                recordedData.push({ timestamp: sensorData.timestamp.toISOString(), deviceId, ...sensorData });
+                // Salvar no SQLite se inicializado, caso contrário usar memória
+                if (sqliteInitialized && window.sqliteManager) {
+                  await window.sqliteManager.insertSensorData(deviceId, {
+                    timestamp: sensorData.timestamp.toISOString(),
+                    voltage: sensorData.voltage,
+                    temperatureC: sensorData.temperatureC,
+                    temperatureF: sensorData.temperatureF,
+                    humidity: sensorData.humidity,
+                    dewPointC: sensorData.dewPointC,
+                    dewPointF: sensorData.dewPointF
+                  });
+                } else {
+                  // Fallback para armazenamento em memória
+                  recordedData.push({ timestamp: sensorData.timestamp.toISOString(), deviceId, ...sensorData });
+                }
+                
                 if (!deviceHistory[deviceId]) deviceHistory[deviceId] = [];
                 deviceHistory[deviceId].push(sensorData);
               }
@@ -630,50 +686,64 @@
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   }
-
   async function exportData() {
     try {
-      if (recordedData.length === 0) {
-        alert("Nenhum dado registrado para exportação.");
-        return;
-      }
-
-      let header = "NL,Disp,Timestamp,VVal,Temp,Umid,PDOrv\n";
-      let csvContent = header;
-
-      recordedData.forEach((reading, index) => {
-        const lineNumber = index + 1;
-        const disp = reading.deviceId;
-        const dateObj = new Date(reading.timestamp);
-        const isoTimestamp = dateObj.toISOString();
-        let vval = "";
-        let temp = "";
-        let umid = "";
-        let pdorv = "";
-
-        if (reading.voltage !== undefined) {
-          let converted;
-          if (reading.deviceId === 1 || reading.deviceId === 2) {
-            converted = convertPressure(reading.deviceId, reading.voltage);
-          } else if (reading.deviceId === 3) {
-            converted = convertDistance(reading.voltage);
-          } else {
-            converted = reading.voltage;
-          }
-          vval = parseFloat(converted.toFixed(2));
-          temp = "N/A";
-          umid = "N/A";
-          pdorv = "N/A";
+      let csvContent = "";
+      
+      // Tentar exportar do SQLite primeiro
+      if (sqliteInitialized && window.sqliteManager) {
+        csvContent = window.sqliteManager.exportToCSV();
+        if (csvContent && csvContent.length > 50) { // Verificar se há conteúdo além do header
+          logDebug("Exportando dados do banco SQLite.");
         } else {
-          vval = "N/A";
-          temp = reading.temperatureC !== undefined ? parseFloat(reading.temperatureC.toFixed(2)) : "N/A";
-          umid = reading.humidity !== undefined ? parseFloat(reading.humidity.toFixed(2)) : "N/A";
-          pdorv = reading.dewPointC !== undefined ? parseFloat(reading.dewPointC.toFixed(2)) : "N/A";
+          logDebug("Nenhum dado encontrado no banco SQLite.");
+          alert("Nenhum dado registrado para exportação.");
+          return;
+        }
+      } else {
+        // Fallback para dados em memória
+        if (recordedData.length === 0) {
+          alert("Nenhum dado registrado para exportação.");
+          return;
         }
 
-        let line = `${lineNumber},${disp},${isoTimestamp},${vval},${temp},${umid},${pdorv}\n`;
-        csvContent += line;
-      });
+        let header = "NL,Disp,Timestamp,VVal,Temp,Umid,PDOrv\n";
+        csvContent = header;
+
+        recordedData.forEach((reading, index) => {
+          const lineNumber = index + 1;
+          const disp = reading.deviceId;
+          const dateObj = new Date(reading.timestamp);
+          const isoTimestamp = dateObj.toISOString();
+          let vval = "";
+          let temp = "";
+          let umid = "";
+          let pdorv = "";
+
+          if (reading.voltage !== undefined) {
+            let converted;
+            if (reading.deviceId === 1 || reading.deviceId === 2) {
+              converted = convertPressure(reading.deviceId, reading.voltage);
+            } else if (reading.deviceId === 3) {
+              converted = convertDistance(reading.voltage);
+            } else {
+              converted = reading.voltage;
+            }
+            vval = parseFloat(converted.toFixed(2));
+            temp = "N/A";
+            umid = "N/A";
+            pdorv = "N/A";
+          } else {
+            vval = "N/A";
+            temp = reading.temperatureC !== undefined ? parseFloat(reading.temperatureC.toFixed(2)) : "N/A";
+            umid = reading.humidity !== undefined ? parseFloat(reading.humidity.toFixed(2)) : "N/A";
+            pdorv = reading.dewPointC !== undefined ? parseFloat(reading.dewPointC.toFixed(2)) : "N/A";
+          }
+
+          let line = `${lineNumber},${disp},${isoTimestamp},${vval},${temp},${umid},${pdorv}\n`;
+          csvContent += line;
+        });
+      }
 
       if ('showSaveFilePicker' in window) {
         try {
@@ -702,20 +772,45 @@
       alert("Erro ao exportar dados. Verifique o console para mais detalhes.");
     }
   }
-
   async function exportLog() {
     try {
-      if (communicationLog.length === 0) {
-        alert("Nenhum log registrado para exportação.");
-        return;
-      }
+      let csvContent = "";
+      
+      // Tentar exportar logs do SQLite primeiro
+      if (sqliteInitialized && window.sqliteManager) {
+        csvContent = window.sqliteManager.exportLogsToCSV();
+        if (csvContent && csvContent.length > 50) { // Verificar se há conteúdo além do header
+          logDebug("Exportando logs do banco SQLite.");
+        } else {
+          // Fallback para logs em memória se SQLite estiver vazio
+          if (communicationLog.length === 0) {
+            alert("Nenhum log registrado para exportação.");
+            return;
+          }
+          
+          const header = "timestamp,direction,message\n";
+          csvContent = header;
+          communicationLog.forEach(entry => {
+            const msg = entry.message.replace(/"/g, '""');
+            csvContent += `${entry.timestamp},${entry.direction},"${msg}"\n`;
+          });
+          logDebug("Exportando logs da memória (SQLite vazio).");
+        }
+      } else {
+        // Fallback completo para dados em memória
+        if (communicationLog.length === 0) {
+          alert("Nenhum log registrado para exportação.");
+          return;
+        }
 
-      const header = "timestamp,direction,message\n";
-      let csvContent = header;
-      communicationLog.forEach(entry => {
-        const msg = entry.message.replace(/"/g, '""');
-        csvContent += `${entry.timestamp},${entry.direction},"${msg}"\n`;
-      });
+        const header = "timestamp,direction,message\n";
+        csvContent = header;
+        communicationLog.forEach(entry => {
+          const msg = entry.message.replace(/"/g, '""');
+          csvContent += `${entry.timestamp},${entry.direction},"${msg}"\n`;
+        });
+        logDebug("Exportando logs da memória.");
+      }
 
       if ('showSaveFilePicker' in window) {
         try {
@@ -823,36 +918,124 @@
       alert("Erro ao exportar histórico. Verifique o console para mais detalhes.");
     }
   }
+  async function exportSqliteData() {
+    try {
+      if (!sqliteInitialized || !window.sqliteManager) {
+        alert("Banco SQLite não está disponível.");
+        return;
+      }
+
+      const stats = window.sqliteManager.getStatistics();
+      if (!stats || stats.sensorRecords === 0) {
+        alert("Nenhum dado histórico encontrado no banco SQLite.");
+        return;
+      }
+
+      const csvContent = window.sqliteManager.exportToCSV();
+      
+      if (!csvContent || csvContent.length <= 50) {
+        alert("Erro ao gerar dados para exportação.");
+        return;
+      }
+
+      if ('showSaveFilePicker' in window) {
+        try {
+          const timestamp = getLocalTimestamp();
+          const handle = await window.showSaveFilePicker({
+            types: [{
+              description: 'CSV Files',
+              accept: {'text/csv': ['.csv']},
+            }],
+            suggestedName: `historico_sqlite_${timestamp.replace(/[: ]/g, "-")}.csv`
+          });
+          const writable = await handle.createWritable();
+          await writable.write(csvContent);
+          await writable.close();
+          logDebug(`Dados históricos do SQLite exportados com sucesso. ${stats.sensorRecords} registros exportados.`);
+        } catch (err) {
+          if (err.name !== 'AbortError') {
+            fallbackExport(csvContent, 'csv');
+          }
+        }
+      } else {
+        fallbackExport(csvContent, 'csv');
+      }
+    } catch (error) {
+      logDebug(`Erro ao exportar dados históricos do SQLite: ${error.message}`);
+      alert("Erro ao exportar dados históricos. Verifique o console para mais detalhes.");
+    }
+  }
 
   // Event listeners
-  toggleRecordingButton.addEventListener("click", () => {
+  toggleRecordingButton.addEventListener("click", async () => {
     isRecording = !isRecording;
     if (isRecording) {
+      // Inicializar SQLite se ainda não foi inicializado
+      if (!sqliteInitialized) {
+        const success = await initializeSQLite();
+        if (success) {
+          sqliteInitialized = true;
+        } else {
+          logDebug("Erro ao inicializar SQLite. Usando armazenamento em memória.");
+        }
+      }
+      
       recordedData = [];
       deviceHistory = {};
       btnToggleAcquisition.disabled = true;
       toggleRecordingButton.textContent = "Parar Gravação";
       toggleRecordingButton.classList.add("recording");
       recordingIndicator.style.display = "inline";
-      logDebug("Gravação iniciada.");
+      logDebug("Gravação iniciada - dados serão salvos no banco SQLite.");
     } else {
       toggleRecordingButton.textContent = "Iniciar Gravação";
       toggleRecordingButton.classList.remove("recording");
       recordingIndicator.style.display = "none";
       btnToggleAcquisition.disabled = false;
-      logDebug(`Gravação finalizada. ${recordedData.length} registros gravados.`);
-      if (recordedData.length > 0 && confirm(`Gravação finalizada com ${recordedData.length} registros. Deseja exportar os dados agora?`)) {
-        exportData();
+      
+      // Forçar salvamento no SQLite
+      if (sqliteInitialized && window.sqliteManager) {
+        await window.sqliteManager.forceSave();
+        const stats = window.sqliteManager.getStatistics();
+        if (stats) {
+          logDebug(`Gravação finalizada. Total de registros no banco: ${stats.sensorRecords}`);
+          if (stats.sensorRecords > 0 && confirm(`Gravação finalizada. ${stats.sensorRecords} registros no banco. Deseja exportar os dados agora?`)) {
+            exportData();
+          }
+        }
+      } else {
+        logDebug(`Gravação finalizada. ${recordedData.length} registros gravados em memória.`);
+        if (recordedData.length > 0 && confirm(`Gravação finalizada com ${recordedData.length} registros. Deseja exportar os dados agora?`)) {
+          exportData();
+        }
       }
     }
   });
-
   exportDataButton.addEventListener("click", exportData);
+  exportSqliteDataButton.addEventListener("click", exportSqliteData);
   exportLogButton.addEventListener("click", exportLog);
   exportHistoryButton.addEventListener("click", exportHistory);
-
+  exportSqliteDataButton.addEventListener("click", exportSqliteData);
   showHistoryButton.addEventListener("click", () => {
     let html = "";
+    
+    // Adicionar informações do banco SQLite se disponível
+    if (sqliteInitialized && window.sqliteManager) {
+      const stats = window.sqliteManager.getStatistics();
+      if (stats) {
+        html += `<div style="background: #f0f0f0; padding: 10px; margin-bottom: 10px; border: 1px solid #ccc;">
+          <h3>Informações do Banco SQLite</h3>
+          <p><strong>Registros de sensores:</strong> ${stats.sensorRecords}</p>
+          <p><strong>Logs de comunicação:</strong> ${stats.logRecords}</p>
+          <p><strong>Dispositivos ativos:</strong> ${stats.activeDevices.join(', ') || 'Nenhum'}</p>
+          ${stats.firstRecord ? `<p><strong>Primeiro registro:</strong> ${new Date(stats.firstRecord).toLocaleString()}</p>` : ''}
+          ${stats.lastRecord ? `<p><strong>Último registro:</strong> ${new Date(stats.lastRecord).toLocaleString()}</p>` : ''}
+        </div>`;
+      }
+    }
+    
+    html += "<h3>Histórico da Sessão Atual</h3>";
+    
     for (let deviceId in deviceHistory) {
       html += `<h2>Dispositivo ${deviceId}</h2>`;
       if (deviceHistory[deviceId].length === 0) {
@@ -903,27 +1086,42 @@
       title: "Histórico de Dados"
     });
   });
-
-  clearDataButton.addEventListener("click", () => {
-    recordedData = [];
-    deviceHistory = {};
-    communicationLog = [];
-    logDebug("Dados limpos.");
-    if (mainChart) {
-      mainChart.data.datasets.forEach(ds => (ds.data = []));
-      mainChart.update("none");
-    }
-    if (tempChart) {
-      tempChart.data.datasets[0].data = [];
-      tempChart.update("none");
-    }
-    if (humidityChart) {
-      humidityChart.data.datasets[0].data = [];
-      humidityChart.update("none");
-    }
-    if (dewPointChart) {
-      dewPointChart.data.datasets[0].data = [];
-      dewPointChart.update("none");
+  clearDataButton.addEventListener("click", async () => {
+    if (confirm("Deseja realmente limpar todos os dados? Esta ação não pode ser desfeita.")) {
+      // Limpar dados em memória
+      recordedData = [];
+      deviceHistory = {};
+      communicationLog = [];
+      
+      // Limpar banco SQLite se inicializado
+      if (sqliteInitialized && window.sqliteManager) {
+        const success = await window.sqliteManager.clearAllData();
+        if (success) {
+          logDebug("Dados limpos do banco SQLite e da memória.");
+        } else {
+          logDebug("Dados limpos da memória, mas erro ao limpar banco SQLite.");
+        }
+      } else {
+        logDebug("Dados limpos da memória.");
+      }
+      
+      // Limpar gráficos
+      if (mainChart) {
+        mainChart.data.datasets.forEach(ds => (ds.data = []));
+        mainChart.update("none");
+      }
+      if (tempChart) {
+        tempChart.data.datasets[0].data = [];
+        tempChart.update("none");
+      }
+      if (humidityChart) {
+        humidityChart.data.datasets[0].data = [];
+        humidityChart.update("none");
+      }
+      if (dewPointChart) {
+        dewPointChart.data.datasets[0].data = [];
+        dewPointChart.update("none");
+      }
     }
   });
 
@@ -1010,9 +1208,23 @@
       });
     }
   });
-
   connectButton.addEventListener("click", async () => {
     try {
+      // Inicializar SQLite na primeira conexão se ainda não foi inicializado
+      if (!sqliteInitialized) {
+        logDebug("Inicializando banco SQLite...");
+        const success = await initializeSQLite();
+        if (success) {
+          sqliteInitialized = true;
+          const stats = window.sqliteManager.getStatistics();
+          if (stats && stats.sensorRecords > 0) {
+            logDebug(`Banco carregado: ${stats.sensorRecords} registros existentes`);
+          }
+        } else {
+          logDebug("Aviso: SQLite não pôde ser inicializado. Usando armazenamento em memória.");
+        }
+      }
+      
       deviceIds = document.getElementById("deviceIds")
         .value.split(",")
         .map(s => parseInt(s.trim()))
